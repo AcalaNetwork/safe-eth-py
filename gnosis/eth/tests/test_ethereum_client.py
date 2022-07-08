@@ -21,8 +21,9 @@ from ..ethereum_client import (
     InvalidNonce,
     ParityManager,
     SenderAccountNotFoundInNode,
+    parse_rpc_result_or_raise,
 )
-from ..exceptions import BatchCallException, InvalidERC20Info
+from ..exceptions import BatchCallException, ChainIdIsRequired, InvalidERC20Info
 from ..utils import fast_to_checksum_address, get_eth_address_with_key
 from .ethereum_test_case import EthereumTestCaseMixin
 from .mocks.mock_internal_txs import creation_internal_txs, internal_txs_errored
@@ -776,6 +777,19 @@ class TestEthereumNetwork(EthereumTestCaseMixin, TestCase):
 
 
 class TestEthereumClient(EthereumTestCaseMixin, TestCase):
+    def test_parse_rpc_result_or_raise(self):
+        self.assertEqual(parse_rpc_result_or_raise({"result": "test"}, "", ""), "test")
+
+        with self.assertRaisesMessage(
+            ValueError,
+            "Problem calling `trace_transaction` on 0x230b7f018951818c2a4545654d43a086ed2a3ed7c5b7c03990f4ac22ffae3840, result={'error': 'Something bad happened'}",
+        ):
+            parse_rpc_result_or_raise(
+                {"error": "Something bad happened"},
+                "trace_transaction",
+                "0x230b7f018951818c2a4545654d43a086ed2a3ed7c5b7c03990f4ac22ffae3840",
+            )
+
     def test_ethereum_client_str(self):
         self.assertTrue(str(self.ethereum_client))
 
@@ -1246,12 +1260,37 @@ class TestEthereumClientWithMainnetNode(EthereumTestCaseMixin, TestCase):
         self.assertGreater(base_fee_per_gas, 0)
         self.assertGreaterEqual(max_priority_fee_per_gas, 0)
 
+    def test_send_unsigned_transaction(self):
+        random_address = Account.create().address
+        random_sender_account = Account.create()
+        tx = {
+            "to": random_address,
+            "value": 0,
+            "data": b"",
+            "gas": 25000,
+            "gasPrice": self.ethereum_client.w3.eth.gas_price,
+        }
+        with self.assertRaises(ChainIdIsRequired):
+            self.ethereum_client.send_unsigned_transaction(
+                tx, private_key=random_sender_account.key
+            )
+
+        tx["chainId"] = 1
+        with self.assertRaises(InsufficientFunds):
+            self.ethereum_client.send_unsigned_transaction(
+                tx, private_key=random_sender_account.key
+            )
+
     def test_trace_block(self):
-        block_number = 2191709
-        self.assertEqual(
-            self.ethereum_client.parity.trace_block(block_number),
-            trace_block_2191709_mock,
-        )
+        block_numbers = [13191781, 2191709]
+        for block_number, trace_block_mock in zip(
+            block_numbers, [trace_block_13191781_mock, trace_block_2191709_mock]
+        ):
+            with self.subTest(block_number=block_number):
+                self.assertEqual(
+                    self.ethereum_client.parity.trace_block(block_number),
+                    trace_block_mock,
+                )
 
     def test_trace_blocks(self):
         block_numbers = [13191781, 2191709]

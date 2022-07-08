@@ -70,6 +70,7 @@ from .contracts import get_erc20_contract, get_erc721_contract
 from .ethereum_network import EthereumNetwork, EthereumNetworkNotSupported
 from .exceptions import (
     BatchCallFunctionFailed,
+    ChainIdIsRequired,
     FromAddressNotFound,
     GasLimitExceeded,
     InsufficientFunds,
@@ -120,6 +121,7 @@ def tx_with_exception_handling(func):
     :return:
     """
     error_with_exception: Dict[str, Exception] = {
+        "EIP-155": ChainIdIsRequired,
         "Transaction with the same hash was already imported": TransactionAlreadyImported,
         "replacement transaction underpriced": ReplacementTransactionUnderpriced,  # https://github.com/ethereum/go-ethereum/blob/eaccdba4ab310e3fb98edbc4b340b5e7c4d767fd/core/tx_pool.go#L72
         "There is another transaction with same nonce in the queue": ReplacementTransactionUnderpriced,  # https://github.com/openethereum/openethereum/blob/f1dc6821689c7f47d8fd07dfc0a2c5ad557b98ec/crates/rpc/src/v1/helpers/errors.rs#L374
@@ -152,6 +154,28 @@ def tx_with_exception_handling(func):
             raise exc
 
     return with_exception_handling
+
+
+def parse_rpc_result_or_raise(
+    result: Dict[str, Any], eth_fn: str, arguments: Any
+) -> Any:
+    """
+    Responses from RPC should return a dictionary with `result` key and they are always 200 OK
+    even if errored. If not, raise an error
+
+    :param result:
+    :param eth_fn: RPC function called (for more info if exception is raised)
+    :param arguments: Arguments for the RPC function (for more info if exception is raised)
+    :return: `result["result"]` if key exists
+    :raises: ValueError
+    """
+
+    if "result" not in result:
+        message = f"Problem calling `{eth_fn}` on {arguments}, result={result}"
+        logger.error(message)
+        raise ValueError(message)
+
+    return result["result"]
 
 
 class EthereumTxSent(NamedTuple):
@@ -1095,11 +1119,7 @@ class ParityManager(EthereumClientManager):
         results = sorted(response.json(), key=lambda x: x["id"])
         traces = []
         for block_identifier, result in zip(block_identifiers, results):
-            if "result" not in result:
-                message = f"Problem calling batch `trace_block` on block={block_identifier}, result={result}"
-                logger.error(message)
-                raise ValueError(message)
-            raw_tx = result["result"]
+            raw_tx = parse_rpc_result_or_raise(result, "trace_block", block_identifier)
             if raw_tx:
                 try:
                     decoded_traces = self._decode_traces(raw_tx)
@@ -1152,8 +1172,8 @@ class ParityManager(EthereumClientManager):
             raise ValueError(message)
         results = sorted(response.json(), key=lambda x: x["id"])
         traces = []
-        for result in results:
-            raw_tx = result["result"]
+        for tx_hash, result in zip(tx_hashes, results):
+            raw_tx = parse_rpc_result_or_raise(result, "trace_transaction", tx_hash)
             if raw_tx:
                 try:
                     decoded_traces = self._decode_traces(raw_tx)
@@ -1663,8 +1683,10 @@ class EthereumClient:
             self.ethereum_node_url, json=payload, timeout=self.slow_timeout
         ).json()
         txs = []
-        for result in sorted(results, key=lambda x: x["id"]):
-            raw_tx = result["result"]
+        for tx_hash, result in zip(tx_hashes, sorted(results, key=lambda x: x["id"])):
+            raw_tx = parse_rpc_result_or_raise(
+                result, "eth_getTransactionByHash", tx_hash
+            )
             if raw_tx:
                 txs.append(transaction_result_formatter(raw_tx))
             else:
@@ -1712,8 +1734,10 @@ class EthereumClient:
             self.ethereum_node_url, json=payload, timeout=self.slow_timeout
         ).json()
         receipts = []
-        for result in sorted(results, key=lambda x: x["id"]):
-            tx_receipt = result["result"]
+        for tx_hash, result in zip(tx_hashes, sorted(results, key=lambda x: x["id"])):
+            tx_receipt = parse_rpc_result_or_raise(
+                result, "eth_getTransactionReceipt", tx_hash
+            )
             # Parity returns tx_receipt even is tx is still pending, so we check `blockNumber` is not None
             if tx_receipt and tx_receipt["blockNumber"] is not None:
                 receipts.append(receipt_formatter(tx_receipt))
@@ -1764,8 +1788,16 @@ class EthereumClient:
             self.ethereum_node_url, json=payload, timeout=self.slow_timeout
         ).json()
         blocks = []
-        for result in sorted(results, key=lambda x: x["id"]):
-            raw_block = result["result"]
+        for block_identifier, result in zip(
+            block_identifiers, sorted(results, key=lambda x: x["id"])
+        ):
+            raw_block = parse_rpc_result_or_raise(
+                result,
+                "eth_getBlockByNumber"
+                if isinstance(block_identifier, int)
+                else "eth_getBlockByHash",
+                block_identifier,
+            )
             if raw_block:
                 if "extraData" in raw_block:
                     del raw_block[
