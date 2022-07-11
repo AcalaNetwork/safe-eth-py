@@ -279,7 +279,7 @@ class BatchCallManager(EthereumClientManager):
                         if isinstance(block_identifier, int)
                         else block_identifier,
                     ],
-                    "id": i+1,
+                    "id": i,
                 }
             )
 
