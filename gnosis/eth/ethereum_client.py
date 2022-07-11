@@ -260,7 +260,7 @@ class BatchCallManager(EthereumClientManager):
             return []
 
         queries = []
-        for i, payload in enumerate(payloads):
+        for i, payload in enumerate(payloads, 1):
             assert "data" in payload, "`data` not present"
             assert "to" in payload, "`to` not present"
             assert "output_type" in payload, "`output-type` not present"
@@ -279,7 +279,7 @@ class BatchCallManager(EthereumClientManager):
                         if isinstance(block_identifier, int)
                         else block_identifier,
                     ],
-                    "id": i,
+                    "id": i+1,
                 }
             )
 
